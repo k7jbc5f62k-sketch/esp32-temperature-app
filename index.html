@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+   content="width=device-width, initial-scale=1.0">
+
+<title>ESP32 Temperature</title>
+
+<!-- PWA support -->
+
+<link rel="manifest" href="./manifest.json">
+
+<meta name="theme-color" content="#007AFF">
+
+<style>
+
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+
+        font-family:
+            -apple-system,
+            BlinkMacSystemFont,
+            "Segoe UI",
+            sans-serif;
+
+        background: #f2f2f7;
+
+        color: #111;
+
+        text-align: center;
+    }
+
+
+    .container {
+
+        max-width: 500px;
+
+        margin: auto;
+
+        padding: 25px 18px;
+    }
+
+
+    h1 {
+
+        font-size: 22px;
+
+        margin-bottom: 25px;
+    }
+
+
+    .card {
+
+        background: white;
+
+        border-radius: 20px;
+
+        padding: 30px 20px;
+
+        box-shadow:
+            0 4px 15px rgba(0,0,0,0.08);
+    }
+
+
+    .temperature {
+
+        font-size: 64px;
+
+        font-weight: 600;
+
+        margin: 15px 0;
+    }
+
+
+    .unit {
+
+        font-size: 28px;
+
+        font-weight: 400;
+    }
+
+
+    .status {
+
+        margin-top: 15px;
+
+        font-size: 17px;
+
+        font-weight: 600;
+    }
+
+
+    .online {
+
+        color: green;
+    }
+
+
+    .offline {
+
+        color: red;
+    }
+
+
+    .reconnecting {
+
+        color: orange;
+    }
+
+
+    .updated {
+
+        margin-top: 10px;
+
+        color: #666;
+
+        font-size: 14px;
+    }
+
+
+    canvas {
+
+        margin-top: 30px;
+
+        width: 100%;
+
+        height: 200px;
+
+        background: white;
+
+        border-radius: 15px;
+    }
+
+</style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+```
+<h1>ESP32 Temperature</h1>
+
+
+<div class="card">
+
+
+    <!-- TEMPERATURE -->
+
+    <div id="temperature"
+         class="temperature">
+
+        --.-<span class="unit">°C</span>
+
+    </div>
+
+
+    <!-- STATUS -->
+
+    <div id="status"
+         class="status offline">
+
+        ● Connecting...
+
+    </div>
+
+
+    <!-- LAST UPDATE -->
+
+    <div id="updated"
+         class="updated">
+
+        Waiting for data
+
+    </div>
+
+
+    <!-- GRAPH -->
+
+    <canvas id="graph"></canvas>
+
+
+</div>
+```
+
+</div>
+
+<!-- =====================================================
+     MQTT.JS
+===================================================== -->
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<script>
+
+
+// =====================================================
+// HIVEMQ
+// =====================================================
+
+const MQTT_HOST =
+    "wss://d097cb7ebe8d47c1b36767668e1e96b5.s1.eu.hivemq.cloud:8884/mqtt";
+
+
+const MQTT_TOPIC =
+    "home/temperature";
+
+
+const STATUS_TOPIC =
+    "home/temperature/status";
+
+
+// =====================================================
+// DASHBOARD MQTT LOGIN
+// =====================================================
+//
+// IMPORTANT:
+// Use a separate HiveMQ dashboard credential here.
+// Ideally it should have SUBSCRIBE permission only.
+//
+// Do NOT use your main/admin credential.
+//
+// =====================================================
+
+const MQTT_USERNAME =
+    "12345678";
+
+
+const MQTT_PASSWORD =
+    "12345678";
+
+
+// =====================================================
+// OFFLINE TIMEOUT
+// =====================================================
+//
+// ESP32 publishes approximately every 5 seconds.
+//
+// If no temperature is received for 15 seconds,
+// the dashboard considers the ESP32 offline.
+//
+// =====================================================
+
+const OFFLINE_TIMEOUT = 15000;
+
+
+let lastTemperatureReceived = 0;
+
+
+// =====================================================
+// STATUS DISPLAY
+// =====================================================
+
+function setStatus(text, className)
+{
+
+    const status =
+        document.getElementById("status");
+
+
+    status.innerHTML =
+        "● " + text;
+
+
+    status.className =
+        "status " + className;
+
+}
+
+
+
+// =====================================================
+// MQTT CONNECTION
+// =====================================================
+
+const client =
+    mqtt.connect(MQTT_HOST, {
+
+        username:
+            MQTT_USERNAME,
+
+        password:
+            MQTT_PASSWORD,
+
+        clean: true,
+
+        reconnectPeriod: 3000,
+
+        connectTimeout: 10000
+
+    });
+
+
+
+// =====================================================
+// CONNECTED
+// =====================================================
+
+client.on("connect", function ()
+{
+
+    console.log(
+        "Connected to HiveMQ"
+    );
+
+
+    setStatus(
+        "Connected",
+        "reconnecting"
+    );
+
+
+    // Subscribe to temperature
+
+    client.subscribe(
+        MQTT_TOPIC,
+        function (error)
+        {
+
+            if (error)
+            {
+
+                console.log(
+                    "Temperature subscription error:",
+                    error
+                );
+
+            }
+
+        }
+    );
+
+
+    // Subscribe to status
+
+    client.subscribe(
+        STATUS_TOPIC,
+        function (error)
+        {
+
+            if (error)
+            {
+
+                console.log(
+                    "Status subscription error:",
+                    error
+                );
+
+            }
+
+        }
+    );
+
+});
+
+
+
+// =====================================================
+// RECONNECTING
+// =====================================================
+
+client.on("reconnect", function ()
+{
+
+    setStatus(
+        "Reconnecting...",
+        "reconnecting"
+    );
+
+});
+
+
+
+// =====================================================
+// OFFLINE
+// =====================================================
+
+client.on("offline", function ()
+{
+
+    setStatus(
+        "Offline",
+        "offline"
+    );
+
+});
+
+
+
+// =====================================================
+// CONNECTION CLOSED
+// =====================================================
+
+client.on("close", function ()
+{
+
+    setStatus(
+        "Offline",
+        "offline"
+    );
+
+});
+
+
+
+// =====================================================
+// MQTT ERROR
+// =====================================================
+
+client.on("error", function (error)
+{
+
+    console.log(
+        "MQTT error:",
+        error
+    );
+
+
+    setStatus(
+        "Connection error",
+        "offline"
+    );
+
+});
+
+
+
+// =====================================================
+// MQTT MESSAGE
+// =====================================================
+
+client.on("message", function (
+    topic,
+    message
+)
+{
+
+    const data =
+        message.toString();
+
+
+    console.log(
+        "MQTT:",
+        topic,
+        data
+    );
+
+
+    // =================================================
+    // ESP32 STATUS
+    // =================================================
+
+    if (topic === STATUS_TOPIC)
+    {
+
+        if (data === "online")
+        {
+
+            // We know the ESP32 is connected.
+            // Temperature messages will confirm it.
+
+            if (
+                lastTemperatureReceived > 0 &&
+                Date.now() -
+                lastTemperatureReceived <
+                OFFLINE_TIMEOUT
+            )
+            {
+
+                setStatus(
+                    "Online",
+                    "online"
+                );
+
+            }
+
+        }
+
+
+        else if (data === "offline")
+        {
+
+            setStatus(
+                "Offline",
+                "offline"
+            );
+
+        }
+
+
+        return;
+
+    }
+
+
+
+    // =================================================
+    // TEMPERATURE
+    // =================================================
+
+    if (topic !== MQTT_TOPIC)
+        return;
+
+
+    const temperature =
+        parseFloat(data);
+
+
+    if (isNaN(temperature))
+        return;
+
+
+    // Record the time
+
+    lastTemperatureReceived =
+        Date.now();
+
+
+
+    // =================================================
+    // DISPLAY TEMPERATURE
+    // =================================================
+
+    document.getElementById(
+        "temperature"
+    ).innerHTML =
+
+        temperature.toFixed(1) +
+
+        '<span class="unit">°C</span>';
+
+
+
+    // =================================================
+    // UPDATE TIME
+    // =================================================
+
+    const now =
+        new Date();
+
+
+    document.getElementById(
+        "updated"
+    ).innerHTML =
+
+        "Updated: " +
+
+        now.toLocaleTimeString();
+
+
+
+    // =================================================
+    // ESP32 IS ONLINE
+    // =================================================
+
+    setStatus(
+        "Online",
+        "online"
+    );
+
+
+
+    // =================================================
+    // GRAPH
+    // =================================================
+
+    addData(
+        temperature
+    );
+
+});
+
+
+
+// =====================================================
+// AUTOMATIC OFFLINE DETECTION
+// =====================================================
+
+setInterval(
+    function ()
+    {
+
+        if (
+            lastTemperatureReceived === 0
+        )
+        {
+            return;
+        }
+
+
+        const elapsed =
+            Date.now() -
+            lastTemperatureReceived;
+
+
+        if (
+            elapsed >
+            OFFLINE_TIMEOUT
+        )
+        {
+
+            setStatus(
+                "Offline",
+                "offline"
+            );
+
+
+            document.getElementById(
+                "updated"
+            ).innerHTML =
+
+                "No data received";
+
+        }
+
+    },
+    3000
+);
+
+
+
+// =====================================================
+// GRAPH
+// =====================================================
+
+const canvas =
+    document.getElementById(
+        "graph"
+    );
+
+
+const ctx =
+    canvas.getContext(
+        "2d"
+    );
+
+
+let temperatures = [];
+
+
+const MAX_POINTS = 30;
+
+
+
+function addData(value)
+{
+
+    temperatures.push(
+        value
+    );
+
+
+    if (
+        temperatures.length >
+        MAX_POINTS
+    )
+    {
+
+        temperatures.shift();
+
+    }
+
+
+    drawGraph();
+
+}
+
+
+
+function drawGraph()
+{
+
+    const width =
+        canvas.width =
+        canvas.clientWidth *
+        window.devicePixelRatio;
+
+
+    const height =
+        canvas.height =
+        canvas.clientHeight *
+        window.devicePixelRatio;
+
+
+    ctx.clearRect(
+        0,
+        0,
+        width,
+        height
+    );
+
+
+    if (
+        temperatures.length < 2
+    )
+    {
+        return;
+    }
+
+
+    let min =
+        Math.min(
+            ...temperatures
+        );
+
+
+    let max =
+        Math.max(
+            ...temperatures
+        );
+
+
+    // Add some vertical space
+
+    min -= 1;
+
+    max += 1;
+
+
+    const xStep =
+        width /
+        (MAX_POINTS - 1);
+
+
+    ctx.beginPath();
+
+
+    temperatures.forEach(
+        (value, i) =>
+        {
+
+            const x =
+                i * xStep;
+
+
+            const y =
+                height -
+                (
+                    (value - min) /
+                    (max - min)
+                ) *
+                height;
+
+
+            if (i === 0)
+            {
+
+                ctx.moveTo(
+                    x,
+                    y
+                );
+
+            }
+
+            else
+            {
+
+                ctx.lineTo(
+                    x,
+                    y
+                );
+
+            }
+
+        }
+    );
+
+
+    ctx.lineWidth = 4;
+
+
+    ctx.strokeStyle =
+        "#007AFF";
+
+
+    ctx.stroke();
+
+}
+
+
+
+// =====================================================
+// RESIZE GRAPH
+// =====================================================
+
+window.addEventListener(
+    "resize",
+    drawGraph
+);
+
+
+
+// =====================================================
+// SERVICE WORKER
+// =====================================================
+
+if (
+    "serviceWorker" in navigator
+)
+{
+
+    window.addEventListener(
+        "load",
+        function ()
+        {
+
+            navigator.serviceWorker
+                .register(
+                    "./service-worker.js"
+                )
+                .then(
+                    function ()
+                    {
+
+                        console.log(
+                            "Service worker registered"
+                        );
+
+                    }
+                )
+                .catch(
+                    function (error)
+                    {
+
+                        console.log(
+                            "Service worker error:",
+                            error
+                        );
+
+                    }
+                );
+
+        }
+    );
+
+}
+
+
+</script>
+
+</body>
+
+</html>
